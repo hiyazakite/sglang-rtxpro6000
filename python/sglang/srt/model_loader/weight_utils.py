@@ -753,6 +753,23 @@ def filter_duplicate_safetensors_files(
     return hf_weights_files
 
 
+def safetensors_files_from_index(hf_folder: str, index_file: str) -> List[str]:
+    """Resolve shard paths from a safetensors index.
+
+    Some checkpoints keep their shards in a subdirectory named by the index
+    rather than in the model root, so a flat glob finds nothing. Returns the
+    index-listed files that exist on disk, or an empty list when there is no
+    index to read.
+    """
+    index_file_name = os.path.join(hf_folder, index_file)
+    if not os.path.isfile(index_file_name):
+        return []
+    with open(index_file_name) as f:
+        weight_map = json.load(f)["weight_map"]
+    files = (os.path.join(hf_folder, name) for name in sorted(set(weight_map.values())))
+    return [f for f in files if os.path.isfile(f)]
+
+
 def maybe_add_mtp_safetensors(
     hf_weights_files: List[str], hf_folder: str, index_file: str, hf_config
 ) -> List[str]:

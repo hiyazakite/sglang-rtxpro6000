@@ -282,3 +282,9 @@ artifacts/
 # Internal, non-published docs
 internal-docs/
 .ple-nvme/
+
+.opengraph/
+
+# Local Pennyroyal deployment overrides (host-specific paths, ports and GPUs)
+docker/pennyroyal/.env.*
+!docker/pennyroyal/.env.example

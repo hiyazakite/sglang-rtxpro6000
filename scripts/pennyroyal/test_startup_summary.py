@@ -8,6 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SUMMARY = ROOT / "configs" / "pennyroyal" / "startup-summary.sh"
 BASE = "5d1a31074028a16f3fba468ed144125cc1222e18"
+# 3.0 made the chunked-prefill cap a flag of its own, so its default is an argv
+# change the base exec block has no way to show. The fixture and the comparison
+# read the same literal, so the two can never disagree.
+MAX_PREFILL_TOKENS = "32768"
 LAUNCHERS = (
     "serve-flash-next.sh",
     "serve-flash-next-frspec.sh",
@@ -223,23 +227,32 @@ class StartupSummaryTest(unittest.TestCase):
                 )
                 self.assertNotIn("Pennyroyal startup — requested settings", base_output)
                 self.assertIn("Pennyroyal startup — requested settings", current_output)
-                # The approved 3.0 default swaps the Next launchers' static
-                # NEXTN 3/1/4 profile for the adaptive one; outside that one
-                # segment the two argvs must stay byte-identical.
-                self.assertEqual(self._adaptive_30_default(base_argv), current_argv)
+                # Only the approved 3.0 defaults may differ; everything else must
+                # stay byte-identical.
+                self.assertEqual(
+                    self._approved_30_default(base_argv, current_argv), current_argv
+                )
 
     @staticmethod
-    def _adaptive_30_default(argv: list[str]) -> list[str]:
-        # The intended delta, stated once: launch the approved policy's
-        # maximum width (steps 7, draft tokens 8 at topk 1) plus the two
-        # adaptive flags right after the draft-token count. The DFlash2
+    def _approved_30_default(base: list[str], current: list[str]) -> list[str]:
+        # The intended deltas, stated once, so nothing else can hide in the
+        # diff. 3.0 made the chunked-prefill cap a flag of its own: the Next
+        # launcher that gained it shows it right after its chunked-prefill pair,
+        # at the default the recipe ships, while the frspec profile keeps the
+        # cap it always had and the DFlash2 profile states its own. The Next
+        # launchers also swap their static NEXTN 3/1/4 profile for the approved
+        # policy's maximum width (steps 7, draft tokens 8 at topk 1) plus the
+        # two adaptive flags right after the draft-token count; the DFlash2
         # profile has no static NEXTN width, so it passes through unchanged.
-        if "--speculative-num-steps" not in argv:
-            return argv
-        at = argv.index("--speculative-num-steps")
-        draft_at = argv.index("--speculative-num-draft-tokens")
-        assert argv[at + 1] == "3" and argv[draft_at + 1] == "4", argv
-        updated = list(argv)
+        updated = list(base)
+        if "--max-prefill-tokens" in current and "--max-prefill-tokens" not in updated:
+            at = updated.index("--chunked-prefill-size")
+            updated[at + 2 : at + 2] = ["--max-prefill-tokens", MAX_PREFILL_TOKENS]
+        if "--speculative-num-steps" not in updated:
+            return updated
+        at = updated.index("--speculative-num-steps")
+        draft_at = updated.index("--speculative-num-draft-tokens")
+        assert updated[at + 1] == "3" and updated[draft_at + 1] == "4", updated
         updated[at + 1] = "7"
         updated[draft_at + 1] = "8"
         updated[draft_at + 2 : draft_at + 2] = [
@@ -285,6 +298,9 @@ class StartupSummaryTest(unittest.TestCase):
             "DRAFT_MODEL": "/models/draft model (small)",
             "TP_SIZE": "2",
             "COMPUTE_DTYPE": "bfloat16",
+            # The NVFP4 recipe reads this from its own default, which is the
+            # same literal the base exec block still hardcodes.
+            "QUANTIZATION": "modelopt_fp4",
             "KV_DTYPE": "fp8_e4m3",
             "TARGET_KV_DTYPE": "fp8_e4m3",
             "DRAFT_KV_DTYPE": "fp8_e5m2",
@@ -300,6 +316,7 @@ class StartupSummaryTest(unittest.TestCase):
             # giving the fixture the same values compares identical argv.
             "MAX_RUNNING_REQUESTS": "4",
             "MAX_MAMBA_CACHE_SIZE": "24",
+            "MAX_PREFILL_TOKENS": MAX_PREFILL_TOKENS,
             # The integrated release sources this unchanged default separately.
             "DEFAULT_CHAT_TEMPLATE_KWARGS": '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}',
             "NIXL_CONFIG": "/configs/NIXL config [qualified].json",
@@ -312,7 +329,10 @@ class StartupSummaryTest(unittest.TestCase):
         }
         if hicache_size:
             scalar_values["HICACHE_SIZE_GB"] = hicache_size
-        lines = ["set -euo pipefail"]
+        # The current block announces the release right before exec'ing, a step
+        # the base block predates. The case below asserts that banner, so source
+        # the real summary rather than stubbing it away.
+        lines = ["set -euo pipefail", f"source {shlex.quote(str(SUMMARY))}"]
         lines.extend(
             f"{name}={shlex.quote(value)}" for name, value in scalar_values.items()
         )

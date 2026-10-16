@@ -99,9 +99,12 @@ if [[ ! "$PREFILL_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 # Bounds how many prompt tokens one iteration may schedule across all requests.
-# The default is the server's own, so the prefill schedule is unchanged; the
-# chunk size above is what actually caps a single request's step.
-MAX_PREFILL_TOKENS="${MAX_PREFILL_TOKENS:-16384}"
+# Four concurrent 4,096-token chunks need 16,384 prompt tokens in a single
+# iteration, so the old default left a full batch of concurrent prefills with no
+# headroom; 32,768 reserves it. A larger bound costs a little KV capacity,
+# because the activation reserve subtracted from the pool grows with it.
+# Override downward to test that trade.
+MAX_PREFILL_TOKENS="${MAX_PREFILL_TOKENS:-32768}"
 if [[ ! "$MAX_PREFILL_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
   echo "MAX_PREFILL_TOKENS must be a positive integer" >&2
   exit 1

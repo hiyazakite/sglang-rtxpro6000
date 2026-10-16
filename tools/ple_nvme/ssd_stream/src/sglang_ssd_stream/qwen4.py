@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-import sglang.srt.models.qwen4_exp as qwen4
 import torch
+
+import sglang.srt.models.qwen4_exp as qwen4
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.runner import get_is_capture_mode
 from sglang.srt.utils import logger
@@ -199,6 +200,7 @@ def around_load_weights(
     original_fn, model, weights: Iterable[tuple[str, torch.Tensor]]
 ):
     """Reject embedded PLE shards and leave ordinary model loading upstream."""
+
     def filtered_weights():
         for original_name, loaded_weight in weights:
             name = original_name.replace("model.language_model.", "model.")

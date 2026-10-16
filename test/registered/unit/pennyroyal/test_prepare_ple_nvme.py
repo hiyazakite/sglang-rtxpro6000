@@ -16,7 +16,9 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
-CHECK_SCRIPT = Path(__file__).parents[4] / "scripts" / "pennyroyal" / "check_ple_nvme.py"
+CHECK_SCRIPT = (
+    Path(__file__).parents[4] / "scripts" / "pennyroyal" / "check_ple_nvme.py"
+)
 CHECK_SPEC = importlib.util.spec_from_file_location("check_ple_nvme", CHECK_SCRIPT)
 CHECK = importlib.util.module_from_spec(CHECK_SPEC)
 assert CHECK_SPEC.loader is not None
@@ -169,7 +171,12 @@ class PreparePLENVMETest(unittest.TestCase):
             tensors.append((f"{prefix}.shard_{shard}.weight", "U8", [rows, 8], codes))
             if not (drop_scale_shard and shard == 1):
                 tensors.append(
-                    (f"{prefix}.shard_{shard}.weight_scale", "F8_E4M3", [rows, 1], scales)
+                    (
+                        f"{prefix}.shard_{shard}.weight_scale",
+                        "F8_E4M3",
+                        [rows, 1],
+                        scales,
+                    )
                 )
             for row in range(rows):
                 expected += codes[row * 8 : (row + 1) * 8] + scales[row : row + 1]
@@ -221,7 +228,9 @@ class PreparePLENVMETest(unittest.TestCase):
             (f"{prefix}.shard_0.weight_scale", "F8_E4M3", [2, 2], bytes(4)),
         ]
         write_safetensors(source / "mixed.safetensors", tensors)
-        self.write_index(source, {name: "mixed.safetensors" for name, *_ in tensors}, 20)
+        self.write_index(
+            source, {name: "mixed.safetensors" for name, *_ in tensors}, 20
+        )
 
         with self.assertRaisesRegex(ValueError, "one per 16 elements"):
             MODULE._prepare(source, self.root / "prepared-width")
@@ -285,7 +294,9 @@ class PreparePLENVMETest(unittest.TestCase):
 
         source, output, _, _ = self.integrity_checkpoint()
         (output / "unexpected-metadata.json").write_text('{"extra":true}')
-        with self.assertRaisesRegex(ValueError, "unexpected=.*unexpected-metadata.json"):
+        with self.assertRaisesRegex(
+            ValueError, "unexpected=.*unexpected-metadata.json"
+        ):
             self.check(source, output)
 
     def test_preflight_rejects_missing_ssd_stream_entrypoint(self):

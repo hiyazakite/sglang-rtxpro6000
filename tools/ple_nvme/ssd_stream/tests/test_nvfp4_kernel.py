@@ -13,7 +13,9 @@ def test_staged_nvfp4_rows_dequantize_to_bfloat16():
 
     rows, columns, group = 5, 160, 16
     generator = torch.Generator().manual_seed(3)
-    codes = torch.randint(0, 16, (rows, columns), generator=generator, dtype=torch.int32)
+    codes = torch.randint(
+        0, 16, (rows, columns), generator=generator, dtype=torch.int32
+    )
     packed = (codes[:, 0::2] | (codes[:, 1::2] << 4)).to(torch.uint8)
     scales = (torch.rand(rows, columns // group, generator=generator) + 0.25).to(
         torch.float8_e4m3fn

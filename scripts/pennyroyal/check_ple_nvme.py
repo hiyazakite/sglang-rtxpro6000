@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """CPU-only NVMe PLE launcher preflight; print its namespace identity."""
+
 # Malformed artifact values are consistently reported as ValueError.
 # ruff: noqa: TRY004
 
@@ -172,7 +173,9 @@ def _verify_prepared_weights(
     rewritten_relatives = set()
     for relative, source_header in source_headers.items():
         retained = tuple(
-            tensor for tensor in source_header.tensors if tensor.name not in removed_names
+            tensor
+            for tensor in source_header.tensors
+            if tensor.name not in removed_names
         )
         if not retained:
             continue
@@ -252,8 +255,7 @@ def _verify_source_overlay(
     ordinary = {
         entry.name: entry
         for entry in source.iterdir()
-        if entry.name != preparer.INDEX_NAME
-        and entry.name not in affected_names
+        if entry.name != preparer.INDEX_NAME and entry.name not in affected_names
     }
     local_names = {
         preparer.INDEX_NAME,
@@ -277,7 +279,9 @@ def _verify_source_overlay(
             source_target = source_path.resolve(strict=True)
             prepared_target = prepared_path.resolve(strict=True)
         except OSError as exc:
-            raise ValueError(f"Prepared source overlay asset is invalid: {name}") from exc
+            raise ValueError(
+                f"Prepared source overlay asset is invalid: {name}"
+            ) from exc
         if not prepared_path.is_symlink() or prepared_target != source_target:
             raise ValueError(
                 f"Prepared source overlay asset does not resolve to source: {name}"

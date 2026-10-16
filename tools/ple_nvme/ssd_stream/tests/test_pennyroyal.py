@@ -5,8 +5,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import pytest
-from sglang.srt.plugins.hook_registry import HookRegistry
 from sglang_ssd_stream import __version__, config, plugin
+
+from sglang.srt.plugins.hook_registry import HookRegistry
 
 REQUIRED_HOOK_TARGETS = (
     "sglang.srt.server_args.ServerArgs.from_cli_args",
@@ -114,9 +115,7 @@ def test_each_required_hook_application_failure_is_fatal(
     assert set(applied) == set(REQUIRED_HOOK_TARGETS) - {failed_target}
 
 
-def test_required_hook_enforcement_is_idempotent(
-    monkeypatch, isolated_hook_registry
-):
+def test_required_hook_enforcement_is_idempotent(monkeypatch, isolated_hook_registry):
     applied = []
 
     def record_apply(cls, target, hooks):

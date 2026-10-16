@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Prepare a local Qwen4-Exp checkpoint for SSD-backed PLE lookup."""
+
 # Malformed serialized checkpoint values are consistently reported as ValueError.
 # ruff: noqa: TRY004
 

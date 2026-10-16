@@ -88,9 +88,9 @@ def dequantize_nvfp4_mtp_experts(
             )
     if pending:
         raise ValueError(
-            "Incomplete NVFP4 MTP expert tensors for: "
-            + ", ".join(sorted(pending)[:5])
+            "Incomplete NVFP4 MTP expert tensors for: " + ", ".join(sorted(pending)[:5])
         )
+
 
 #: Hard row limit of the donor dense GEMV (``assert M <= 16`` in w8a16_gemv).
 _GEMV_DONOR_MAX_M = 16
@@ -211,7 +211,9 @@ class Qwen4ExpForCausalLMMTP(Qwen3_5ForCausalLMMTP):
         )
         self.logits_processor = LogitsProcessor(config)
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]], *args, **kwargs):
+    def load_weights(
+        self, weights: Iterable[Tuple[str, torch.Tensor]], *args, **kwargs
+    ):
         return super().load_weights(
             dequantize_nvfp4_mtp_experts(weights), *args, **kwargs
         )

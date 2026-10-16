@@ -3,8 +3,9 @@
 import copy
 import functools
 import logging
+import re
 from contextlib import ExitStack
-from typing import Optional
+from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import torch
 from torch import nn
@@ -24,6 +25,72 @@ from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import add_prefix, is_npu
 
 logger = logging.getLogger(__name__)
+
+_E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+_NVFP4_GROUP_SIZE = 16
+_NVFP4_MTP_EXPERT = re.compile(
+    r"^(mtp\.layers\.\d+\.mlp\.experts\.\d+\.(?:gate|up|down)_proj)"
+    r"\.(weight|weight_scale|weight_scale_2)$"
+)
+
+
+def dequantize_nvfp4(
+    packed: torch.Tensor,
+    group_scale: torch.Tensor,
+    global_scale: torch.Tensor,
+    group_size: int = _NVFP4_GROUP_SIZE,
+) -> torch.Tensor:
+    """Dequantize a ModelOpt NVFP4 matrix to bfloat16.
+
+    ``packed`` holds two E2M1 codes per byte (low nibble first along the input
+    dimension), ``group_scale`` one E4M3 scale per ``group_size`` inputs and
+    ``global_scale`` the per-tensor FP32 scale.
+    """
+    rows, half = packed.shape
+    lut = torch.tensor(_E2M1_VALUES, dtype=torch.float32, device=packed.device)
+    codes = torch.stack((packed & 0x0F, packed >> 4), dim=-1).reshape(rows, half * 2)
+    values = lut[(codes & 0x7).long()]
+    values = torch.where((codes & 0x8) != 0, -values, values)
+    scale = group_scale.to(torch.float32) * global_scale.to(torch.float32).reshape(())
+    values = values.view(rows, half * 2 // group_size, group_size)
+    return (values * scale.unsqueeze(-1)).reshape(rows, half * 2).to(torch.bfloat16)
+
+
+def dequantize_nvfp4_mtp_experts(
+    weights: Iterable[Tuple[str, torch.Tensor]],
+) -> Iterator[Tuple[str, torch.Tensor]]:
+    """Expand per-expert NVFP4 MTP experts to the bfloat16 tensors the MTP loads.
+
+    Checkpoints that quantize the MTP routed experts store, per projection, a
+    packed ``weight``, a group ``weight_scale`` and a ``weight_scale_2``. The
+    draft model keeps its experts in bfloat16, so each projection is emitted as
+    a single dequantized ``weight`` once all three tensors have arrived; all
+    other tensors pass through untouched.
+    """
+    pending: Dict[str, Dict[str, torch.Tensor]] = {}
+    for name, tensor in weights:
+        match = _NVFP4_MTP_EXPERT.match(name)
+        if match is None or (
+            match.group(2) == "weight" and tensor.dtype != torch.uint8
+        ):
+            yield name, tensor
+            continue
+        base, kind = match.groups()
+        parts = pending.setdefault(base, {})
+        parts[kind] = tensor
+        if len(parts) == 3:
+            del pending[base]
+            yield (
+                f"{base}.weight",
+                dequantize_nvfp4(
+                    parts["weight"], parts["weight_scale"], parts["weight_scale_2"]
+                ),
+            )
+    if pending:
+        raise ValueError(
+            "Incomplete NVFP4 MTP expert tensors for: "
+            + ", ".join(sorted(pending)[:5])
+        )
 
 #: Hard row limit of the donor dense GEMV (``assert M <= 16`` in w8a16_gemv).
 _GEMV_DONOR_MAX_M = 16
@@ -143,6 +210,11 @@ class Qwen4ExpForCausalLMMTP(Qwen3_5ForCausalLMMTP):
             use_attn_tp_group=get_parallel().config.enable_dp_lm_head,
         )
         self.logits_processor = LogitsProcessor(config)
+
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]], *args, **kwargs):
+        return super().load_weights(
+            dequantize_nvfp4_mtp_experts(weights), *args, **kwargs
+        )
 
     def _init_pre_fc_norms(self, config: PretrainedConfig) -> None:
         self.pre_fc_norm_embedding = GemmaRMSNorm(

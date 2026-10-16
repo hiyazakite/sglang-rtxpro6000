@@ -333,6 +333,26 @@ profile; a new map gets its own validation and cache namespace. See
 [PROVENANCE.md](PROVENANCE.md#v23-fr-spec-provenance) for hashes and source
 details.
 
+## Experimental: QAD mixed NVFP4/MXFP8 Flash-Next checkpoint
+
+Checkpoints such as `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` (the
+uncompressed-scale form of NVIDIA's QAD export) carry a `MIXED_PRECISION`
+quantization config: NVFP4 routed experts, MXFP8 attention, GDN and shared-expert
+projections, an NVFP4 PLE table, and per-expert NVFP4 MTP experts. Select the
+mixed loader with:
+
+```bash
+export QUANTIZATION=modelopt_mixed
+```
+
+The loader recognises the NVFP4 PLE table and dequantizes it inside the gather
+(about 26.8 GiB instead of 47.7 GiB). The MTP experts are dequantized to BF16 at
+load, as in the default checkpoint. NVMe-backed PLE supports the NVFP4 table with
+a re-laid-out overlay; see [NVME-PLE.md](NVME-PLE.md#nvfp4-ple-tables). NVIDIA's own
+`Qwen3.8-Flash-Next-FP4-Local` stores its expert scales in a compressed format
+that this runtime does not read. This path has had tensor-level checks only, not
+an end-to-end qualification.
+
 ## Optional 1,000,000-token Flash-Next KV pool
 
 `MAX_TOTAL_TOKENS` accepts a positive page-64-aligned override:

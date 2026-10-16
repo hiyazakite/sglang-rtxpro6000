@@ -85,6 +85,20 @@ Allow at least 48 GiB plus filesystem overhead and any retained mixed-shard
 tensors. Keep the source immutable throughout preparation and serving, and
 keep the prepared overlay immutable while serving.
 
+### NVFP4 PLE tables
+
+Mixed-precision QAD checkpoints (`QUANTIZATION=modelopt_mixed`) store the PLE
+table as NVFP4: per shard, packed `U8` codes in `shard_N.weight` and E4M3 group
+scales in `shard_N.weight_scale`, with a per-table `weight_scale_2` that stays
+in the ordinary weights. The preparer detects this layout and writes one
+interleaved row per vocabulary id, 80 code bytes followed by 10 scale bytes for
+a 160-wide table, so each lookup remains one contiguous read. The manifest
+records `dtype: nvfp4` and `group_size: 16`. The table is about **26.8 GiB**
+instead of 47.7 GiB, and rows are dequantized on the GPU after staging.
+Preparation rewrites the table instead of copying shard bytes, and the
+exact-byte description above applies to BF16 and FP8 tables only. Reinstall the
+reader from this checkout (`0.2.0+pennyroyal3`) before preparing or serving.
+
 ## Launch with NVMe PLE
 
 Retain the normal compiler-cache, NIXL and model settings, then select `nvme`:
@@ -191,5 +205,5 @@ Pennyroyal adds explicit opt-in/fail-loud registration, exact source and model
 guards, table checksum validation, an offline exact-byte preparer, and launcher
 integration. It uses the isolated reader path rather than the upstream
 all-in-one CLI installer; QSA/MTP remain part of the Pennyroyal runtime. The
-adapted reader identifies itself as `0.2.0+pennyroyal2`; the credited upstream
+adapted reader identifies itself as `0.2.0+pennyroyal3`; the credited upstream
 release remains SSD Stream v0.2.0.

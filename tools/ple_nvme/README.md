@@ -54,8 +54,9 @@ Online SM120 MXFP8 is independently opt-in with the literal setting
 `SGLANG_SM120_ONLINE_MXFP8=true`; its default is `false`.
 The optional reader is imported only in NVMe mode; its registration also requires
 the explicit mode, protecting RAM/27B startup from plugin auto-discovery.
-The launcher requires Pennyroyal adapter build `0.2.0+pennyroyal2`; older local
-adapter builds are rejected because they lack the complete hook-application guard.
+The launcher requires Pennyroyal adapter build `0.2.0+pennyroyal3`; older local
+adapter builds are rejected because they lack the complete hook-application guard
+and NVFP4 PLE table support.
 
 The launcher checks source compatibility and source/overlay identity. Server
 startup hashes the external PLE table before workers start; allow time for this

@@ -63,7 +63,7 @@ case "$PENNY_PLE_BACKEND" in
     PLE_OFFLOAD_EMBEDDING=false
     PLE_NAMESPACE_ARGS=(--field "ple_backend=nvme"
       --field "ple_manifest_sha256=$PLE_MANIFEST_SHA"
-      --field "ple_reader_version=0.2.0+pennyroyal2")
+      --field "ple_reader_version=0.2.0+pennyroyal3")
     ;;
   *) echo "PENNY_PLE_BACKEND must be ram or nvme" >&2; exit 1 ;;
 esac

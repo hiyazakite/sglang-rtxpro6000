@@ -14,7 +14,7 @@ from sglang.srt.utils import logger
 from .backend import SSDStreamEmbedding
 from .config import get_config
 
-_PLE_SHARD = re.compile(r"\.ngram_embedding\.shard_(\d+)\.weight$")
+_PLE_SHARD = re.compile(r"\.ngram_embedding\.shard_(\d+)\.weight(_scale)?$")
 
 
 class _GraphCaptureTicket:
@@ -129,7 +129,7 @@ class Qwen4PLELayer(qwen4.Qwen4ExpPLELayer):
         ticket.wait_for_launch()
         ticket.enqueue_consumer_wait(torch.cuda.current_stream())
         embedding = self.ple_embedding.ngram_embedding
-        embeddings = embedding.reduce(embeddings) * embedding.weight_scale
+        embeddings = self.ple_embedding.apply_table_scale(embedding.reduce(embeddings))
         embeddings = self.ple_embedding._finish_embedding_lookup(
             embeddings,
             semantic_tokens,

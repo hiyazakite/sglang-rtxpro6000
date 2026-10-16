@@ -185,3 +185,62 @@ def test_manifest_rejects_parent_path(tmp_path):
 
     with pytest.raises(ValueError, match="must stay inside"):
         config.load_manifest(manifest)
+
+
+def _nvfp4_manifest(tmp_path, *, rows, columns, nbytes):
+    root = tmp_path / "model"
+    table = root / "ple" / "table.bin"
+    table.parent.mkdir(parents=True)
+    table.write_bytes(b"\x01" * nbytes)
+    manifest = root / "ssd-stream.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": "sglang-ssd-stream",
+                "version": 1,
+                "tables": [
+                    {
+                        "layer": 0,
+                        "path": "ple/table.bin",
+                        "sha256": hashlib.sha256(b"\x01" * nbytes).hexdigest(),
+                        "dtype": "nvfp4",
+                        "group_size": 16,
+                        "rows": rows,
+                        "columns": columns,
+                        "row_start": 0,
+                        "bytes": nbytes,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_nvfp4_row_holds_codes_then_group_scales():
+    assert config.row_nbytes("nvfp4", 160) == 90
+    assert config.row_nbytes("float8_e4m3fn", 160) == 160
+    assert config.row_nbytes("bfloat16", 160) == 320
+    with pytest.raises(ValueError, match="multiple of 16"):
+        config.row_nbytes("nvfp4", 100)
+
+
+def test_manifest_accepts_nvfp4_table(tmp_path):
+    manifest = _nvfp4_manifest(tmp_path, rows=3, columns=160, nbytes=270)
+
+    table = config.load_manifest(manifest).table_for_layer(0)
+
+    assert (table.dtype, table.rows, table.columns, table.nbytes) == (
+        "nvfp4",
+        3,
+        160,
+        270,
+    )
+
+
+def test_manifest_rejects_nvfp4_table_of_the_fp8_size(tmp_path):
+    manifest = _nvfp4_manifest(tmp_path, rows=3, columns=160, nbytes=480)
+
+    with pytest.raises(ValueError, match="declares 480 bytes, expected 270"):
+        config.load_manifest(manifest)

@@ -25,7 +25,7 @@ REQUIRED_HOOK_TARGETS = (
 
 
 def test_corrected_adapter_version_is_explicit():
-    assert __version__ == "0.2.0+pennyroyal2"
+    assert __version__ == "0.2.0+pennyroyal3"
 
 
 @pytest.fixture

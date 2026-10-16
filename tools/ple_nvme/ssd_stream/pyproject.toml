@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sglang-ssd-stream"
-version = "0.2.0+pennyroyal2"
+version = "0.2.0+pennyroyal3"
 description = "Stream Qwen3.8 Flash-Next PLE tables from local NVMe storage"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

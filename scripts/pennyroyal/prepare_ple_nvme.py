@@ -24,13 +24,16 @@ _MAX_HEADER_BYTES = 128 * 1024 * 1024
 _COPY_BYTES = 8 * 1024 * 1024
 _PLE_SHARD = re.compile(
     r"^(?P<prefix>.*\.layers\.(?P<layer>\d+)\.ple\.ple_embedding\."
-    r"ngram_embedding)\.shard_(?P<shard>\d+)\.weight$"
+    r"ngram_embedding)\.shard_(?P<shard>\d+)\.(?P<kind>weight|weight_scale)$"
 )
 _PLE_WEIGHT_FRAGMENT = ".ple.ple_embedding.ngram_embedding."
 _PLE_DTYPES = {
     "BF16": ("bfloat16", 2),
     "F8_E4M3": ("float8_e4m3fn", 1),
 }
+# NVFP4 rows store packed E2M1 codes followed by one E4M3 scale per group.
+_NVFP4_GROUP_SIZE = 16
+_NVFP4_CHUNK_ROWS = 65536
 
 
 @dataclass(frozen=True)
@@ -262,19 +265,108 @@ def _config_ple_layers(config: dict[str, Any]) -> tuple[dict[int, int], int]:
     }, split_parts
 
 
-def _ple_coordinates(name: str) -> tuple[str, int, int] | None:
+def _ple_coordinates(name: str) -> tuple[str, int, int, str] | None:
     match = _PLE_SHARD.fullmatch(name)
     if match is not None:
         return (
             match.group("prefix"),
             int(match.group("layer")),
             int(match.group("shard")),
+            match.group("kind"),
         )
     if _PLE_WEIGHT_FRAGMENT in name and name.endswith(".weight"):
         raise ValueError(
             f"unsupported PLE weight layout (expected ngram_embedding.shard_N.weight): {name}"
         )
     return None
+
+
+def _interleave_nvfp4_rows(
+    codes: bytes, scales: bytes, code_width: int, scale_width: int
+) -> bytearray:
+    row_bytes = code_width + scale_width
+    rows = len(codes) // code_width
+    output = bytearray(rows * row_bytes)
+    for index in range(code_width):
+        output[index::row_bytes] = codes[index::code_width]
+    for index in range(scale_width):
+        output[code_width + index :: row_bytes] = scales[index::scale_width]
+    return output
+
+
+def _validate_nvfp4_layer(
+    ple_index: int,
+    weights: list[TensorLocation],
+    scales: list[TensorLocation],
+) -> tuple[int, int]:
+    """Return (code_width, scale_width) bytes per row for an NVFP4 PLE layer."""
+    if any(tensor.dtype != "U8" for tensor in weights):
+        raise ValueError(f"NVFP4 PLE layer {ple_index} needs U8 packed shards")
+    if any(tensor.dtype != "F8_E4M3" for tensor in scales):
+        raise ValueError(f"NVFP4 PLE layer {ple_index} needs F8_E4M3 scale shards")
+    for tensor in (*weights, *scales):
+        if len(tensor.shape) != 2 or tensor.shape[0] <= 0:
+            raise ValueError(f"PLE shard {tensor.name} must be a non-empty matrix")
+    code_width = weights[0].shape[1]
+    scale_width = scales[0].shape[1]
+    if code_width <= 0 or scale_width <= 0:
+        raise ValueError(f"inconsistent NVFP4 PLE widths for layer {ple_index}")
+    if scale_width * _NVFP4_GROUP_SIZE != code_width * 2:
+        raise ValueError(
+            f"NVFP4 PLE layer {ple_index} scales are not one per "
+            f"{_NVFP4_GROUP_SIZE} elements"
+        )
+    for weight, scale in zip(weights, scales, strict=True):
+        if weight.shape != (weight.shape[0], code_width) or scale.shape != (
+            weight.shape[0],
+            scale_width,
+        ):
+            raise ValueError(
+                f"NVFP4 PLE shards {weight.name} and {scale.name} do not match"
+            )
+        if (
+            weight.nbytes != weight.shape[0] * code_width
+            or scale.nbytes != scale.shape[0] * scale_width
+        ):
+            raise ValueError(f"PLE shard {weight.name} has an unexpected byte size")
+    return code_width, scale_width
+
+
+def _write_nvfp4_table(
+    table_path: Path,
+    weights: list[TensorLocation],
+    scales: list[TensorLocation],
+    code_width: int,
+    scale_width: int,
+) -> tuple[str, int, int]:
+    digest = hashlib.sha256()
+    nbytes = 0
+    rows = 0
+    with table_path.open("xb") as output_stream:
+        for weight, scale in zip(weights, scales, strict=True):
+            with weight.path.open("rb") as code_stream, scale.path.open(
+                "rb"
+            ) as scale_stream:
+                for start in range(0, weight.shape[0], _NVFP4_CHUNK_ROWS):
+                    count = min(_NVFP4_CHUNK_ROWS, weight.shape[0] - start)
+                    code_stream.seek(weight.offset + start * code_width)
+                    scale_stream.seek(scale.offset + start * scale_width)
+                    codes = code_stream.read(count * code_width)
+                    group_scales = scale_stream.read(count * scale_width)
+                    if len(codes) != count * code_width or len(group_scales) != (
+                        count * scale_width
+                    ):
+                        raise ValueError(
+                            "source safetensors payload ended during an NVFP4 read"
+                        )
+                    chunk = _interleave_nvfp4_rows(
+                        codes, group_scales, code_width, scale_width
+                    )
+                    output_stream.write(chunk)
+                    digest.update(chunk)
+                    nbytes += len(chunk)
+            rows += weight.shape[0]
+    return digest.hexdigest(), nbytes, rows
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -353,13 +445,16 @@ def _prepare(source: Path, output: Path) -> Path:
     grouped: dict[int, dict[int, TensorLocation]] = {
         ple_index: {} for ple_index in layer_to_ple_index.values()
     }
+    grouped_scales: dict[int, dict[int, TensorLocation]] = {
+        ple_index: {} for ple_index in layer_to_ple_index.values()
+    }
     prefixes: dict[int, str] = {}
     removed_names: set[str] = set()
     for name, tensor in header_locations.items():
         coordinates = _ple_coordinates(name)
         if coordinates is None:
             continue
-        prefix, model_layer, shard_index = coordinates
+        prefix, model_layer, shard_index, kind = coordinates
         if name not in weight_map:
             raise ValueError(f"PLE shard is absent from weight_map: {name}")
         if layer_to_ple_index.get(model_layer) is None:
@@ -371,9 +466,10 @@ def _prepare(source: Path, output: Path) -> Path:
         previous_prefix = prefixes.setdefault(ple_index, prefix)
         if previous_prefix != prefix:
             raise ValueError(f"multiple PLE tensor prefixes map to layer {ple_index}")
-        if shard_index in grouped[ple_index]:
+        target = grouped[ple_index] if kind == "weight" else grouped_scales[ple_index]
+        if shard_index in target:
             raise ValueError(f"duplicate PLE shard {shard_index} for layer {ple_index}")
-        grouped[ple_index][shard_index] = tensor
+        target[shard_index] = tensor
         removed_names.add(name)
 
     expected_shards = set(range(split_parts))
@@ -387,8 +483,17 @@ def _prepare(source: Path, output: Path) -> Path:
                 f"unexpected={unexpected}"
             )
 
+    for ple_index, scale_shards in grouped_scales.items():
+        if scale_shards and set(scale_shards) != expected_shards:
+            raise ValueError(
+                f"PLE layer {ple_index} scale shard set does not match its weights"
+            )
+
     affected_paths = {
-        tensor.path for shards in grouped.values() for tensor in shards.values()
+        tensor.path
+        for table in (grouped, grouped_scales)
+        for shards in table.values()
+        for tensor in shards.values()
     }
     for path in affected_paths:
         if path.parent != source:
@@ -414,6 +519,31 @@ def _prepare(source: Path, output: Path) -> Path:
         for ple_index in sorted(grouped):
             shards = grouped[ple_index]
             ordered = [shards[index] for index in sorted(shards)]
+            scale_shards = grouped_scales[ple_index]
+            if scale_shards:
+                ordered_scales = [scale_shards[index] for index in sorted(scale_shards)]
+                code_width, scale_width = _validate_nvfp4_layer(
+                    ple_index, ordered, ordered_scales
+                )
+                table_path = ple_root / f"layer-{ple_index}.bin"
+                sha256, nbytes, rows = _write_nvfp4_table(
+                    table_path, ordered, ordered_scales, code_width, scale_width
+                )
+                removed_bytes += nbytes
+                table_specs.append(
+                    {
+                        "layer": ple_index,
+                        "path": table_path.relative_to(temporary).as_posix(),
+                        "sha256": sha256,
+                        "dtype": "nvfp4",
+                        "group_size": _NVFP4_GROUP_SIZE,
+                        "rows": rows,
+                        "columns": code_width * 2,
+                        "row_start": 0,
+                        "bytes": nbytes,
+                    }
+                )
+                continue
             dtype = ordered[0].dtype
             if dtype not in _PLE_DTYPES:
                 raise ValueError(

@@ -153,7 +153,7 @@ without an upstream rebase or dependency refresh.
   modules, unchanged state formats, measured gains and qualification limits.
 - Optional NVMe PLE incorporates [Garner McCloud's SSD Stream v0.2.0](https://github.com/garnermccloud/sglang-ssd-stream/tree/176a522ef9d6dbb5056ae1f467fe49af0f1258a5),
   with its Apache-2.0 license and NOTICE retained. Pennyroyal's adapter is
-  `0.2.0+pennyroyal2`: explicit opt-in, source/artifact checks, complete hook
+  `0.2.0+pennyroyal3`: explicit opt-in, source/artifact checks, complete hook
   application enforcement, an exact-byte overlay preparer and portable
   launcher integration. [NVME-PLE.md](NVME-PLE.md) documents installation,
   memory savings and the measured performance tradeoff.

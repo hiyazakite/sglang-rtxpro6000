@@ -965,6 +965,10 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
             candidates.append(
                 "language_model.model." + prefix[len("model.language_model.") :]
             )
+        elif prefix.startswith("model.layers."):
+            # Multimodal checkpoints name the text decoder model.language_model.*
+            # while its modules are built under model.*.
+            candidates.append("model.language_model." + prefix[len("model.") :])
 
         return tuple(dict.fromkeys(candidates))
 

@@ -154,6 +154,78 @@ class PreparePLENVMETest(unittest.TestCase):
     def check(self, source: Path, output: Path):
         return CHECK.check(source, output)
 
+    def nvfp4_checkpoint(self, *, drop_scale_shard=False):
+        source = self.checkpoint(layer_ids=(2,), split_parts=2)
+        prefix = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding"
+        global_scale = f"{prefix}.weight_scale_2"
+        ordinary = "model.language_model.layers.1.input_layernorm.weight"
+        # 16 columns: 8 code bytes and one group-scale byte per row.
+        shard_rows = (3, 2)
+        tensors = []
+        expected = bytearray()
+        for shard, rows in enumerate(shard_rows):
+            codes = bytes((shard * 50 + i) % 256 for i in range(rows * 8))
+            scales = bytes((shard * 70 + 100 + i) % 256 for i in range(rows))
+            tensors.append((f"{prefix}.shard_{shard}.weight", "U8", [rows, 8], codes))
+            if not (drop_scale_shard and shard == 1):
+                tensors.append(
+                    (f"{prefix}.shard_{shard}.weight_scale", "F8_E4M3", [rows, 1], scales)
+                )
+            for row in range(rows):
+                expected += codes[row * 8 : (row + 1) * 8] + scales[row : row + 1]
+        tensors.append((global_scale, "F32", [1], b"\x00\x00\x80\x3f"))
+        write_safetensors(source / "mixed.safetensors", tensors)
+        write_safetensors(
+            source / "ordinary.safetensors",
+            [(ordinary, "F32", [1], b"\x05\x06\x07\x08")],
+        )
+        weight_map = {name: "mixed.safetensors" for name, *_ in tensors}
+        weight_map[ordinary] = "ordinary.safetensors"
+        self.write_index(source, weight_map, 1000)
+        return source, bytes(expected), global_scale, ordinary
+
+    def test_nvfp4_shards_become_interleaved_rows(self):
+        source, expected, global_scale, ordinary = self.nvfp4_checkpoint()
+        output = self.root / "prepared-nvfp4"
+
+        MODULE._prepare(source, output)
+
+        manifest = json.loads((output / MODULE.MANIFEST_NAME).read_text())
+        (table,) = manifest["tables"]
+        self.assertEqual(table["dtype"], "nvfp4")
+        self.assertEqual(table["group_size"], 16)
+        self.assertEqual((table["rows"], table["columns"]), (5, 16))
+        self.assertEqual(table["bytes"], len(expected))
+        table_bytes = (output / table["path"]).read_bytes()
+        self.assertEqual(table_bytes, expected)
+        self.assertEqual(table["sha256"], hashlib.sha256(expected).hexdigest())
+
+        index = json.loads((output / MODULE.INDEX_NAME).read_text())
+        self.assertEqual(set(index["weight_map"]), {global_scale, ordinary})
+        self.assertEqual(index["metadata"]["total_size"], 1000 - len(expected))
+        _, kept = read_safetensors(output / "mixed.safetensors")
+        self.assertEqual(set(kept), {global_scale})
+        CHECK._verify_prepared_weights(source.resolve(), output.resolve(), manifest)
+
+    def test_nvfp4_rejects_missing_scale_shard(self):
+        source, *_ = self.nvfp4_checkpoint(drop_scale_shard=True)
+
+        with self.assertRaisesRegex(ValueError, "scale shard set"):
+            MODULE._prepare(source, self.root / "prepared-missing")
+
+    def test_nvfp4_rejects_mismatched_group_width(self):
+        source = self.checkpoint(layer_ids=(2,), split_parts=1)
+        prefix = "model.language_model.layers.1.ple.ple_embedding.ngram_embedding"
+        tensors = [
+            (f"{prefix}.shard_0.weight", "U8", [2, 8], bytes(16)),
+            (f"{prefix}.shard_0.weight_scale", "F8_E4M3", [2, 2], bytes(4)),
+        ]
+        write_safetensors(source / "mixed.safetensors", tensors)
+        self.write_index(source, {name: "mixed.safetensors" for name, *_ in tensors}, 20)
+
+        with self.assertRaisesRegex(ValueError, "one per 16 elements"):
+            MODULE._prepare(source, self.root / "prepared-width")
+
     def test_preflight_accepts_exact_preparer_output(self):
         source, output, _, _ = self.integrity_checkpoint()
 

@@ -14,7 +14,19 @@ _RUNTIME_CONFIG_ENV = "SGLANG_SSD_STREAM_CONFIG"
 _MANIFEST_NAME = "ssd-stream.json"
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_DTYPES = {"bfloat16", "float8_e4m3fn"}
+_DTYPES = {"bfloat16", "float8_e4m3fn", "nvfp4"}
+NVFP4_GROUP_SIZE = 16
+
+
+def row_nbytes(dtype: str, columns: int) -> int:
+    """Bytes per table row; NVFP4 rows hold packed codes then group scales."""
+    if dtype == "nvfp4":
+        if columns % NVFP4_GROUP_SIZE:
+            raise ValueError(
+                f"NVFP4 PLE width must be a multiple of {NVFP4_GROUP_SIZE}: {columns}"
+            )
+        return columns // 2 + columns // NVFP4_GROUP_SIZE
+    return columns * (1 if dtype == "float8_e4m3fn" else 2)
 
 
 @dataclass(frozen=True)
@@ -103,8 +115,7 @@ def load_manifest(path: Path) -> SSDStreamConfig:
             raise ValueError(f"unsupported SSD Stream dtype for layer {layer}: {dtype}")
         if rows <= 0 or columns <= 0 or row_start < 0:
             raise ValueError(f"invalid SSD Stream shape for layer {layer}")
-        element_size = 1 if dtype == "float8_e4m3fn" else 2
-        expected_bytes = rows * columns * element_size
+        expected_bytes = rows * row_nbytes(dtype, columns)
         if nbytes != expected_bytes:
             raise ValueError(
                 f"SSD Stream layer {layer} declares {nbytes} bytes, expected "

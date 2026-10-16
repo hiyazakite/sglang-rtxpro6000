@@ -81,6 +81,8 @@ if [[ ! "$TP_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 COMPUTE_DTYPE=bfloat16
+# modelopt_mixed serves the mixed NVFP4/MXFP8 QAD checkpoints.
+QUANTIZATION="${QUANTIZATION:-modelopt_fp4}"
 KV_DTYPE=fp8_e4m3
 MAMBA_SSM_DTYPE=bfloat16
 MAMBA_CONV_DTYPE=bfloat16
@@ -228,7 +230,7 @@ launch_args=(serve \
   --load-format safetensors \
   --served-model-name pennyroyal \
   --host 0.0.0.0 --port 8001 --tp "$TP_SIZE" \
-  --dtype "$COMPUTE_DTYPE" --quantization modelopt_fp4 --kv-cache-dtype "$KV_DTYPE" \
+  --dtype "$COMPUTE_DTYPE" --quantization "$QUANTIZATION" --kv-cache-dtype "$KV_DTYPE" \
   --mem-fraction-static 0.981 \
   "${TOKEN_CAP_ARGS[@]}" \
   --context-length "$CONTEXT_LENGTH" --json-model-override-args "$TARGET_OVERRIDES" \

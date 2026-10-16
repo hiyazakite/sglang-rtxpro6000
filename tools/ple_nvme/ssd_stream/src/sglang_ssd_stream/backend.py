@@ -22,7 +22,7 @@ from sglang.srt.utils import logger
 from torch import nn
 
 from ._io import PageReader
-from .config import SSDStreamConfig
+from .config import SSDStreamConfig, row_nbytes as table_row_nbytes
 
 # Staging capacity is a row budget, not a byte budget: a lookup requests one
 # row per token and ngram head, so the dtype's element size decides how many
@@ -56,6 +56,50 @@ def _copy_ple_staged_rows_kernel(
     tl.store(
         output_ptr + row_id * embedding_dim + offsets,
         values,
+        mask=mask,
+    )
+
+
+@triton.jit
+def _copy_ple_staged_nvfp4_rows_kernel(
+    staged_ptr,
+    global_scale_ptr,
+    output_ptr,
+    embedding_dim,
+    row_nbytes,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    # Each staged row is packed E2M1 codes followed by one E4M3 scale per group.
+    row_id = tl.program_id(0)
+    offsets = tl.arange(0, BLOCK_D)
+    mask = offsets < embedding_dim
+    row_base = staged_ptr.to(tl.int64) + row_id.to(tl.int64) * row_nbytes
+    packed = tl.load(
+        (row_base + offsets // 2).to(tl.pointer_type(tl.uint8)),
+        mask=mask,
+        other=0,
+    ).to(tl.int32)
+    code = tl.where(offsets % 2 == 0, packed & 0xF, packed >> 4)
+    exponent = (code >> 1) & 3
+    mantissa = (code & 1).to(tl.float32)
+    magnitude = tl.where(
+        exponent == 0,
+        0.5 * mantissa,
+        (1.0 + 0.5 * mantissa) * tl.exp2((exponent - 1).to(tl.float32)),
+    )
+    value = tl.where((code & 8) != 0, -magnitude, magnitude)
+    group_scale = tl.load(
+        (row_base + embedding_dim // 2 + offsets // GROUP_SIZE).to(
+            tl.pointer_type(tl.float8e4nv)
+        ),
+        mask=mask,
+        other=0.0,
+    ).to(tl.float32)
+    value = value * group_scale * tl.load(global_scale_ptr).to(tl.float32)
+    tl.store(
+        output_ptr + row_id * embedding_dim + offsets,
+        value.to(tl.bfloat16),
         mask=mask,
     )
 
@@ -132,11 +176,21 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
         ple_layer_index: int,
     ) -> None:
         nn.Module.__init__(self)
-        if not isinstance(embedding.quant_method, UnquantizedEmbeddingMethod):
+        from sglang.srt.layers.quantization.modelopt_quant import (
+            ModelOptNvFp4EmbeddingMethod,
+        )
+
+        self._nvfp4 = isinstance(embedding.quant_method, ModelOptNvFp4EmbeddingMethod)
+        if not self._nvfp4 and not isinstance(
+            embedding.quant_method, UnquantizedEmbeddingMethod
+        ):
             raise NotImplementedError(
-                "SSD Stream requires an unquantized PLE embedding table"
+                "SSD Stream requires an unquantized or NVFP4 PLE embedding table"
             )
-        if embedding.weight.dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        if not self._nvfp4 and embedding.weight.dtype not in (
+            torch.bfloat16,
+            torch.float8_e4m3fn,
+        ):
             raise TypeError(
                 "SSD Stream requires bfloat16 or fp8 PLE weights, got "
                 f"{embedding.weight.dtype}"
@@ -149,10 +203,19 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
 
         source_weight = embedding.weight
         shape = tuple(source_weight.shape)
-        self._storage_dtype = source_weight.dtype
-        self._element_size = source_weight.element_size()
-        self._row_nbytes = self.embedding_dim * self._element_size
-        dtype_name = str(self._storage_dtype).removeprefix("torch.")
+        if self._nvfp4:
+            self._storage_dtype = torch.uint8
+            self._element_size = 1
+            self._group_size = embedding.quant_method.quant_config.group_size
+            dtype_name = "nvfp4"
+            self._row_nbytes = table_row_nbytes(dtype_name, self.embedding_dim)
+            expected_width = self.embedding_dim // 2
+        else:
+            self._storage_dtype = source_weight.dtype
+            self._element_size = source_weight.element_size()
+            self._row_nbytes = self.embedding_dim * self._element_size
+            dtype_name = str(self._storage_dtype).removeprefix("torch.")
+            expected_width = self.embedding_dim
         tp_start = self.shard_indices.org_vocab_start_index
         tp_end = self.shard_indices.org_vocab_end_index
         table = config.table_for_layer(ple_layer_index)
@@ -172,7 +235,7 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
                 f"SSD Stream layer {ple_layer_index} covers rows "
                 f"[{table.row_start}, {table_end}), not TP rows [{tp_start}, {tp_end})"
             )
-        if shape != (tp_end - tp_start, self.embedding_dim):
+        if shape != (tp_end - tp_start, expected_width):
             raise ValueError(
                 f"SSD Stream local embedding shape {shape} does not match TP range "
                 f"[{tp_start}, {tp_end})"
@@ -181,7 +244,20 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
         self.backing_path = str(table.path)
         self._table_sha256 = table.sha256
         self._table_nbytes = table.nbytes
-        self.register_buffer("weight_scale", embedding.weight_scale, persistent=True)
+        if self._nvfp4:
+            # The global scale is an ordinary checkpoint tensor, so the normal
+            # loader fills it; the table itself carries codes and group scales.
+            global_scale = nn.Parameter(
+                torch.empty(1, dtype=torch.float32), requires_grad=False
+            )
+            global_scale.weight_loader = lambda param, loaded: param.data.copy_(
+                loaded.reshape(param.shape).float()
+            )
+            self.register_parameter("weight_scale_2", global_scale)
+        else:
+            self.register_buffer(
+                "weight_scale", embedding.weight_scale, persistent=True
+            )
         del embedding.weight
 
         staging_budget_nbytes = _STAGING_MIB * 1024**2 * self._element_size
@@ -192,7 +268,7 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
                 self._staging_capacity_rows,
                 self._row_nbytes,
                 self._storage_dtype,
-                self.embedding_dim,
+                self._row_nbytes if self._nvfp4 else self.embedding_dim,
             )
             for _ in range(_STAGING_SLOTS)
         ]
@@ -264,13 +340,24 @@ class SSDStreamEmbedding(VocabParallelEmbedding):
         )
 
         with torch.cuda.stream(stream):
-            _copy_ple_staged_rows_kernel[(row_count,)](
-                slot.rows_weight.data_ptr(),
-                output,
-                embedding_dim=self.embedding_dim,
-                is_fp8=self._storage_dtype == torch.float8_e4m3fn,
-                BLOCK_D=self._block_d,
-            )
+            if self._nvfp4:
+                _copy_ple_staged_nvfp4_rows_kernel[(row_count,)](
+                    slot.rows_weight.data_ptr(),
+                    self.weight_scale_2,
+                    output,
+                    embedding_dim=self.embedding_dim,
+                    row_nbytes=self._row_nbytes,
+                    GROUP_SIZE=self._group_size,
+                    BLOCK_D=self._block_d,
+                )
+            else:
+                _copy_ple_staged_rows_kernel[(row_count,)](
+                    slot.rows_weight.data_ptr(),
+                    output,
+                    embedding_dim=self.embedding_dim,
+                    is_fp8=self._storage_dtype == torch.float8_e4m3fn,
+                    BLOCK_D=self._block_d,
+                )
             slot.gpu_done.record(stream)
             if completion_event is not None:
                 completion_event.record(stream)

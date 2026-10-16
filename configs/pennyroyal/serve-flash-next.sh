@@ -98,6 +98,18 @@ if [[ ! "$PREFILL_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   echo "PREFILL_CHUNK_SIZE must be a positive integer" >&2
   exit 1
 fi
+# Bounds how many prompt tokens one iteration may schedule across all requests.
+# The default is the server's own, so the prefill schedule is unchanged; the
+# chunk size above is what actually caps a single request's step.
+MAX_PREFILL_TOKENS="${MAX_PREFILL_TOKENS:-16384}"
+if [[ ! "$MAX_PREFILL_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_PREFILL_TOKENS must be a positive integer" >&2
+  exit 1
+fi
+if (( MAX_PREFILL_TOKENS < PREFILL_CHUNK_SIZE )); then
+  echo "MAX_PREFILL_TOKENS must be at least PREFILL_CHUNK_SIZE" >&2
+  exit 1
+fi
 for path in "${required_executables[@]}"; do
   [[ -x "$path" ]] || { echo "Required executable missing: $path" >&2; exit 1; }
 done
@@ -246,6 +258,7 @@ launch_args=(serve \
   --context-length "$CONTEXT_LENGTH" --json-model-override-args "$TARGET_OVERRIDES" \
   --page-size "$PAGE_SIZE" --max-running-requests "$MAX_RUNNING_REQUESTS" --sleep-on-idle \
   --chunked-prefill-size "$PREFILL_CHUNK_SIZE" \
+  --max-prefill-tokens "$MAX_PREFILL_TOKENS" \
   --mamba-radix-cache-strategy extra_buffer --mamba-ssm-dtype "$MAMBA_SSM_DTYPE" \
   --max-mamba-cache-size "$MAX_MAMBA_CACHE_SIZE" --gdn-mtp-cache-mode none \
   --linear-attn-decode-backend flashinfer --linear-attn-prefill-backend flashinfer \

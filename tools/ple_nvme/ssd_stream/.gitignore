@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.so
 .pytest_cache/
+
+.opengraph/
+
+/index/

@@ -557,6 +557,9 @@ class RecipeHiCacheSizeTests(unittest.TestCase):
         "DRAFT_MODEL": "/models/draft model (small)",
         "TP_SIZE": "1",
         "COMPUTE_DTYPE": "bfloat16",
+        # The NVFP4 recipe reads this from its own default, which is the same
+        # literal the base exec block still hardcodes.
+        "QUANTIZATION": "modelopt_fp4",
         "KV_DTYPE": "fp8_e4m3",
         "TARGET_KV_DTYPE": "fp8_e4m3",
         "DRAFT_KV_DTYPE": "fp8_e5m2",
@@ -570,6 +573,10 @@ class RecipeHiCacheSizeTests(unittest.TestCase):
         "MAMBA_TRACK_INTERVAL": "64",
         "MAX_MAMBA_CACHE_SIZE": "24",
         "MAX_RUNNING_REQUESTS": "4",
+        # 3.0 made the chunked-prefill cap a flag of its own, which the base
+        # exec block predates; the fixture only needs a value the recipe's own
+        # guard accepts.
+        "MAX_PREFILL_TOKENS": "32768",
         # The integrated release sources the default from reasoning-effort.sh.
         "DEFAULT_CHAT_TEMPLATE_KWARGS": '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}',
         "NIXL_CONFIG": "/configs/NIXL config [qualified].toml",

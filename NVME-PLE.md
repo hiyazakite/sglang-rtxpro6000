@@ -99,6 +99,12 @@ Preparation rewrites the table instead of copying shard bytes, and the
 exact-byte description above applies to BF16 and FP8 tables only. Reinstall the
 reader from this checkout (`0.2.0+pennyroyal3`) before preparing or serving.
 
+Loading the mixed-precision checkpoint with the table in the ordinary weights is
+now qualified end to end (see
+[RUN.md](RUN.md#experimental-qad-mixed-nvfp4mxfp8-flash-next-checkpoint)). This
+NVMe overlay path still rests on the reader, preparer and gather checks above
+rather than on a served NVFP4 overlay.
+
 ## Launch with NVMe PLE
 
 Retain the normal compiler-cache, NIXL and model settings, then select `nvme`:

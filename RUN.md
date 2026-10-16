@@ -350,8 +350,35 @@ The loader recognises the NVFP4 PLE table and dequantizes it inside the gather
 load, as in the default checkpoint. NVMe-backed PLE supports the NVFP4 table with
 a re-laid-out overlay; see [NVME-PLE.md](NVME-PLE.md#nvfp4-ple-tables). NVIDIA's own
 `Qwen3.8-Flash-Next-FP4-Local` stores its expert scales in a compressed format
-that this runtime does not read. This path has had tensor-level checks only, not
-an end-to-end qualification.
+that this runtime does not read.
+
+A mixed checkpoint spells the block scale of an MXFP8 layer the same way as that
+of an NVFP4 layer -- `.weight_scale` -- but `Fp8LinearMethod` registers MXFP8
+scales as `weight_scale_inv`, while the NVFP4 methods really do use
+`weight_scale`. The loader renames MXFP8 scales wholesale only for a pure
+`mxfp8` checkpoint, so the mixed config answers `mxfp8_weight_scale_name()` per
+layer from `quantized_layers`, which also covers fused names such as
+`in_proj_qkvz` whose checkpoint shards agree. Conflicting shard algorithms leave
+the name alone, so such a layer fails as a missing parameter instead of loading
+into the wrong one.
+
+NVFP4 MoE needs FlashInfer's CUTLASS runner. The default selection resolves to
+`flashinfer_trtllm`, which rejects this layout with `Unsupported
+moe_runner_backend for NVFP4 MoE`, so pass `--moe-runner-backend
+flashinfer_cutlass` to the server you launch (the launchers in
+[configs/pennyroyal](configs/pennyroyal) target `modelopt_fp4` and do not set
+it).
+
+This path is qualified end to end only against a small synthetic Qwen4-Exp
+checkpoint with the same quantization shape (MXFP8 linear-attention and
+shared-expert projections, an NVFP4 PLE table, NVFP4 routed experts):
+`ModelOptModelLoader` claims every tensor, startup completes, `/health` returns
+200, and a `/generate` request returns finite logprobs through the NVFP4 PLE
+gather. That checkpoint carries random weights, so this is a loading and
+serving qualification rather than an accuracy one, and it ran without CUDA
+graphs and without MTP. The published checkpoint itself remains qualified at the
+tensor level only; the loader-level naming and the PLE-table dispatch described
+here are covered by unit tests.
 
 ## Optional 1,000,000-token Flash-Next KV pool
 

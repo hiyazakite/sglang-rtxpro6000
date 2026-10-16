@@ -978,6 +978,20 @@ class DefaultModelLoader(BaseModelLoader):
                 )
                 for name, loaded_weight in weights
             )
+        else:
+            # Mixed-precision checkpoints mix MXFP8 and NVFP4 layers, whose
+            # block scales share the `.weight_scale` spelling but land in
+            # differently named parameters; the config decides per layer.
+            map_scale_name = (
+                getattr(quant_config, "mxfp8_weight_scale_name", None)
+                if quant_config is not None
+                else None
+            )
+            if map_scale_name is not None:
+                weights = (
+                    (map_scale_name(name), loaded_weight)
+                    for name, loaded_weight in weights
+                )
 
         if is_nvfp4_online or is_modelopt_fp4_online:
             # Scope exact FP4 quantization math to load-time conversion only;

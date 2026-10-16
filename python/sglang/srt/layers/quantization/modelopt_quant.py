@@ -918,6 +918,29 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
                 self.quantized_layers
             )
 
+    def mxfp8_weight_scale_name(self, name: str) -> str:
+        """Map a checkpoint weight name to the parameter name sglang registers.
+
+        Checkpoints spell MXFP8 block scales as ``.weight_scale`` while
+        ``Fp8LinearMethod``/``Fp8MoEMethod`` register them as
+        ``weight_scale_inv``; a pure MXFP8 checkpoint is renamed wholesale by
+        the loader. Mixed-precision checkpoints hold both spellings at once
+        (NVFP4 layers genuinely use ``.weight_scale``), so the rename has to be
+        decided per layer from ``quantized_layers``.
+        """
+        if not name.endswith(".weight_scale"):
+            return name
+        stem = name[: -len(".weight_scale")]
+        try:
+            quant_algo = self._resolve_quant_algo(stem)
+        except ValueError:
+            # Ambiguous fused layer: leave the name alone and let load_weights
+            # report the missing parameter rather than guessing a rename.
+            return name
+        if quant_algo == "MXFP8":
+            return f"{name}_inv"
+        return name
+
     def _resolve_quant_algo(self, prefix: str) -> Optional[str]:
         for candidate in self._quantized_layer_prefix_candidates(prefix):
             if candidate in self.quantized_layers:

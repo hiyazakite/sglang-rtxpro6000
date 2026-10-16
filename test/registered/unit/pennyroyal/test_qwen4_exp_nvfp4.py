@@ -30,9 +30,12 @@ def _load_mtp_helpers():
         name = (
             node.name
             if isinstance(node, ast.FunctionDef)
-            else node.targets[0].id
-            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-            else None
+            else (
+                node.targets[0].id
+                if isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Name)
+                else None
+            )
         )
         if name in wanted:
             exec(ast.get_source_segment(source, node), namespace)
@@ -60,9 +63,9 @@ def _expected(codes: torch.Tensor, group_scale, global_scale) -> torch.Tensor:
 def _random_matrix(rows=4, cols=64, seed=0):
     generator = torch.Generator().manual_seed(seed)
     codes = torch.randint(0, 16, (rows, cols), generator=generator, dtype=torch.int32)
-    group_scale = (
-        torch.rand(rows, cols // 16, generator=generator) + 0.25
-    ).to(torch.float8_e4m3fn)
+    group_scale = (torch.rand(rows, cols // 16, generator=generator) + 0.25).to(
+        torch.float8_e4m3fn
+    )
     global_scale = torch.tensor([0.0123])
     return codes, group_scale, global_scale
 
@@ -102,7 +105,9 @@ def test_mtp_experts_are_dequantized_in_any_arrival_order():
         prefix = f"mtp.layers.0.mlp.experts.3.{proj}"
         codes, tensors = _expert_tensors(prefix, i)
         ref[prefix] = _expected(
-            codes, tensors[f"{prefix}.weight_scale"], tensors[f"{prefix}.weight_scale_2"]
+            codes,
+            tensors[f"{prefix}.weight_scale"],
+            tensors[f"{prefix}.weight_scale_2"],
         )
         stream.extend(tensors.items())
     stream = stream[::-1]

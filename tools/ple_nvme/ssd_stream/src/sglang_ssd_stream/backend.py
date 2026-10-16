@@ -9,6 +9,8 @@ from contextlib import nullcontext
 import torch
 import triton
 import triton.language as tl
+from torch import nn
+
 from sglang.srt.distributed import get_tp_group, tensor_model_parallel_all_reduce
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
@@ -19,10 +21,10 @@ from sglang.srt.layers.quantization.unquant import UnquantizedEmbeddingMethod
 from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.model_executor.runner import get_is_capture_mode
 from sglang.srt.utils import logger
-from torch import nn
 
 from ._io import PageReader
-from .config import SSDStreamConfig, row_nbytes as table_row_nbytes
+from .config import SSDStreamConfig
+from .config import row_nbytes as table_row_nbytes
 
 # Staging capacity is a row budget, not a byte budget: a lookup requests one
 # row per token and ngram head, so the dtype's element size decides how many

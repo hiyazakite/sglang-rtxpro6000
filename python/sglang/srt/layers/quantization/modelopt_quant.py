@@ -980,6 +980,12 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
         if prefix.endswith(".lm_head"):
             candidates.append("lm_head")
 
+        # The vision attention builds one fused `qkv_proj` module, while ModelOpt
+        # exports that same layer as a single `attn.qkv` entry.
+        head, _, leaf = prefix.rpartition(".")
+        if head and leaf == "qkv_proj":
+            candidates.append(f"{head}.qkv")
+
         if prefix.startswith("language_model.model."):
             candidates.append(
                 "model.language_model." + prefix[len("language_model.model.") :]

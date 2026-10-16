@@ -1276,9 +1276,12 @@ class Qwen3VLForConditionalGeneration(nn.Module):
         else:
             self.visual = Qwen3VLMoeVisionModel(
                 config.vision_config,
-                # NOTE: Qwen3-VL vision encoder currently supports BitsAndBytes 4-bit quantization.
-                # Other quantization methods (e.g., GPTQ, AWQ) are untested and may not be supported.
-                quant_config=None,
+                # ModelOpt checkpoints quantize the vision encoder too (this one uses
+                # MXFP8 attention and W4A16_NVFP4 mlp/merger). The checkpoint spells
+                # those layers `model.visual.*`, which is also the prefix passed below,
+                # so `quantized_layers` resolves as-is. Leaving this None builds the
+                # tower in bf16 and the packed fp4 weights fail to load.
+                quant_config=quant_config,
                 norm_eps=getattr(config, "rms_norm_eps", 1e-6),
                 prefix=add_prefix("model.visual", prefix),
                 use_data_parallel=self.use_data_parallel,

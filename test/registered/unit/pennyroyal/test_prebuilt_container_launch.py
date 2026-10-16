@@ -49,6 +49,8 @@ CONTROLLED = (
     "MAX_RUNNING_REQUESTS",
     "MAX_MAMBA_CACHE_SIZE",
     "MAX_TOTAL_TOKENS",
+    "PREFILL_CHUNK_SIZE",
+    "MAX_PREFILL_TOKENS",
     "SGLANG_MM_PREPROCESS_DEVICE",
     "SGLANG_HICACHE_NIXL_BACKEND_STORAGE_DIR",
     "FLASHINFER_GDN_FP16_ACCUM_MMA",
@@ -82,6 +84,8 @@ def qualified_defaults() -> dict[str, str]:
         "MAX_RUNNING_REQUESTS": "",
         "MAX_MAMBA_CACHE_SIZE": "",
         "MAX_TOTAL_TOKENS": "",
+        "PREFILL_CHUNK_SIZE": "",
+        "MAX_PREFILL_TOKENS": "",
         "SGLANG_MM_PREPROCESS_DEVICE": "",
     }
 

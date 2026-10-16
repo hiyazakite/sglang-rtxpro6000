@@ -114,6 +114,20 @@ MAMBA_SSM_DTYPE=bfloat16
 MAMBA_CONV_DTYPE=bfloat16
 MAMBA_TRACK_INTERVAL=64
 PREFILL_CHUNK_SIZE=4096
+# Prompt tokens one iteration may schedule across all requests. Four concurrent
+# 4,096-token chunks need 16,384 in a single iteration, so the old 8,192-token
+# bound left a full batch of concurrent prefills without headroom; 32,768
+# reserves it. A larger bound costs a little KV capacity, because the activation
+# reserve subtracted from the pool grows with it.
+MAX_PREFILL_TOKENS=32768
+if [[ ! "$MAX_PREFILL_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_PREFILL_TOKENS must be a positive integer" >&2
+  exit 1
+fi
+if (( MAX_PREFILL_TOKENS < PREFILL_CHUNK_SIZE )); then
+  echo "MAX_PREFILL_TOKENS must be at least PREFILL_CHUNK_SIZE" >&2
+  exit 1
+fi
 if [[ ! "$HICACHE_SIZE_GB" =~ ^[1-9][0-9]*$ ]]; then
   echo "HICACHE_SIZE_GB must be a positive integer number of GB, got '$HICACHE_SIZE_GB'" >&2
   exit 1
@@ -282,6 +296,7 @@ launch_args=(serve \
   --context-length "$CONTEXT_LENGTH" --json-model-override-args "$TARGET_OVERRIDES" \
   --page-size "$PAGE_SIZE" --max-running-requests "$MAX_RUNNING_REQUESTS" --sleep-on-idle \
   --chunked-prefill-size "$PREFILL_CHUNK_SIZE" \
+  --max-prefill-tokens "$MAX_PREFILL_TOKENS" \
   --mamba-radix-cache-strategy extra_buffer --mamba-ssm-dtype "$MAMBA_SSM_DTYPE" \
   --max-mamba-cache-size "$MAX_MAMBA_CACHE_SIZE" --gdn-mtp-cache-mode none \
   --linear-attn-decode-backend flashinfer --linear-attn-prefill-backend flashinfer \

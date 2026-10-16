@@ -102,6 +102,7 @@ DEFAULT_GPU_MEMORY_FRACTION_FOR_CALIBRATION = (
     0.8  # Reserve 20% GPU memory headroom for ModelOpt calibration
 )
 from sglang.srt.environ import envs
+from sglang.srt.model_loader.csf_scales import decode_csf_scale_streams
 from sglang.srt.model_loader.weight_utils import (
     CheckpointFilePrefetchHandle,
     _prefetch_all_checkpoints,
@@ -120,6 +121,7 @@ from sglang.srt.model_loader.weight_utils import (
     multi_thread_pt_weights_iterator,
     np_cache_weights_iterator,
     pt_weights_iterator,
+    safetensors_files_from_index,
     safetensors_weights_iterator,
     set_runai_streamer_env,
 )
@@ -488,6 +490,19 @@ class DefaultModelLoader(BaseModelLoader):
         hf_weights_files: List[str] = []
         for pattern in allow_patterns:
             hf_weights_files += glob.glob(os.path.join(hf_folder, pattern))
+            if not hf_weights_files and pattern == "*.safetensors":
+                # Some checkpoints keep their shards in a subdirectory that the
+                # index names (e.g. tensors/model-00001-of-00021.safetensors),
+                # so a flat glob of the model root finds nothing. Resolve the
+                # shards from the index instead.
+                if not is_local:
+                    download_safetensors_index_file_from_hf(
+                        model_name_or_path,
+                        index_file,
+                        self.load_config.download_dir,
+                        revision,
+                    )
+                hf_weights_files += safetensors_files_from_index(hf_folder, index_file)
             if len(hf_weights_files) > 0:
                 if pattern == "*.safetensors":
                     use_safetensors = True
@@ -651,6 +666,12 @@ class DefaultModelLoader(BaseModelLoader):
                 )
             else:
                 weights_iterator = pt_weights_iterator(hf_weights_files)
+
+        # CSF-compressed NVFP4 block scales arrive as two tensors per scale and
+        # are rebuilt into a single E4M3 ``weight_scale`` here, ahead of any
+        # name rewriting or filtering, so consumers see the same names an
+        # uncompressed checkpoint would provide.
+        weights_iterator = decode_csf_scale_streams(weights_iterator)
 
         if self.load_config.draft_model_idx is not None:
             return self._filter_mtp_weights(

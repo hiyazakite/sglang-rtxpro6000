@@ -1369,6 +1369,45 @@ def dequant_mxfp4(
     return out_raw.reshape(batch, n, k * 32)
 
 
+def mxfp8_dense_weight_servable(n: int, k: int) -> bool:
+    """Whether any dense MXFP8 GEMM kernel can serve an ``(n, k)`` weight.
+
+    FlashInfer's ``mm_mxfp8`` runs ``_check_mm_mxfp8_problem_size`` as a
+    ``common_check`` for *every* backend it dispatches to (cutlass, trtllm,
+    cute-dsl, cutedsl_low_latency, cudnn, b12x), so an N or K below 128 is
+    rejected whichever one is selected. DeepGEMM additionally needs N % 64 == 0
+    and K % 128 == 0. Take the strictest of the two so the answer holds no
+    matter which backend is configured.
+    """
+    return n >= 128 and k >= 128 and n % 64 == 0 and k % 128 == 0
+
+
+def dequantize_mxfp8(
+    w_q: torch.Tensor,
+    w_s: torch.Tensor,
+    out_dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor:
+    """MXFP8 (e4m3, block size 32) -> ``out_dtype``.
+
+    ``w_q``: ``(n, k)`` float8_e4m3fn. ``w_s``: ``(n, k // 32)`` uint8 holding
+    UE8M0 block scales, whose value is ``2 ** (byte - 127)``.
+    """
+    n, k = w_q.shape
+    assert k % 32 == 0, k
+    assert w_s.dtype == torch.uint8, w_s.dtype
+    assert w_s.numel() == n * (k // 32), (w_s.shape, n, k)
+
+    # A UE8M0 byte is an exponent-only value and the IEEE fp32 exponent field
+    # carries the same +127 bias, so the byte drops straight into that field.
+    scale = (
+        (w_s.contiguous().view(-1).to(torch.int32) << 23)
+        .view(torch.float32)
+        .view(n, k // 32)
+    )
+    dequant = w_q.to(torch.float32) * scale.repeat_interleave(32, dim=1)
+    return dequant.to(out_dtype)
+
+
 def input_to_float8(
     x: torch.Tensor, dtype: torch.dtype = fp8_dtype
 ) -> Tuple[torch.Tensor, torch.Tensor]:

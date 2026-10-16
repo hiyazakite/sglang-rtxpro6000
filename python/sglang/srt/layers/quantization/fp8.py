@@ -58,9 +58,11 @@ from sglang.srt.layers.quantization.fp8_utils import (
     can_auto_enable_marlin_fp8,
     cutlass_fp8_supported,
     deepgemm_w8a8_block_fp8_linear_with_fallback,
+    dequantize_mxfp8,
     dispatch_w8a8_block_fp8_linear,
     dispatch_w8a8_mxfp8_linear,
     input_to_float8,
+    mxfp8_dense_weight_servable,
     mxfp8_group_quantize,
     normalize_e4m3fn_to_e4m3fnuz,
     requant_block_scale_ue8m0_for_deepgemm,
@@ -730,6 +732,31 @@ class Fp8LinearMethod(LinearMethodBase):
     def _process_mxfp8_linear_weight_scale(self, layer: Module) -> None:
         if not self.use_mxfp8:
             return
+        if getattr(layer, "mxfp8_dense_bf16_fallback", False):
+            return
+
+        n, k = layer.weight.shape
+        if not mxfp8_dense_weight_servable(n, k):
+            # No MXFP8 GEMM kernel accepts this shape, so keep the projection in
+            # bf16 rather than aborting the load. Checkpoints do quantize narrow
+            # projections: Qwen3.5's linear-attention in_proj_a and in_proj_b are
+            # (48, K) each and fuse into a single (96, K) in_proj_ba.
+            layer.weight = Parameter(
+                dequantize_mxfp8(
+                    layer.weight.data,
+                    layer.weight_scale_inv.data,
+                    out_dtype=getattr(layer, "orig_dtype", None) or torch.bfloat16,
+                ),
+                requires_grad=False,
+            )
+            layer.weight_scale_inv = None
+            layer.mxfp8_dense_bf16_fallback = True
+            logger.warning_once(
+                f"MXFP8 weight shape ({n}, {k}) is below the minimum supported by "
+                "any MXFP8 GEMM kernel (N >= 128, K >= 128); this layer was "
+                "dequantized to bf16 at load time."
+            )
+            return
 
         backend = self.mxfp8_dense_backend
         if backend.is_flashinfer_trtllm():
@@ -970,6 +997,23 @@ class Fp8LinearMethod(LinearMethodBase):
                 size_k=layer.input_size_per_partition,
                 bias=bias,
             )
+
+        if getattr(layer, "mxfp8_dense_bf16_fallback", False):
+            # Weight was dequantized to bf16 at load time because its MXFP8 shape
+            # is not servable by any kernel; see
+            # _process_mxfp8_linear_weight_scale. The activation is expected in
+            # bf16: _select_fused_ar_input_for_linear only hands a quantized
+            # tuple to a linear that accepts one, and this one no longer does.
+            if isinstance(x, tuple):
+                q_x, x_scale = x[0], x[1]
+                if x_scale.dtype == torch.uint8 or x_scale.numel() != 1:
+                    raise RuntimeError(
+                        "MXFP8 bf16 fallback only supports a per-tensor "
+                        f"activation scale, got {tuple(x_scale.shape)} "
+                        f"{x_scale.dtype}."
+                    )
+                x = q_x.to(torch.float32) * x_scale.to(torch.float32)
+            return F.linear(x.to(layer.weight.dtype), layer.weight, bias)
 
         if self.use_mxfp8:
             backend = self.mxfp8_dense_backend

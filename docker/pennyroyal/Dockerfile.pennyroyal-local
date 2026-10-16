@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1
+#
+# A locally derived rebuild of the Penny Royal serving image.
+#
+# The parent image bakes one source revision; this layers a different one on
+# top by fetching it into the existing checkout. That is sound for revisions
+# whose diff against the baked revision contains no C, CUDA, Rust source, build
+# manifest or Dockerfile change -- nothing the parent's build stage compiled has
+# gone stale, so recompiling it would cost an hour and change nothing. Layer the
+# canonical docker/pennyroyal/Dockerfile instead as soon as the source gains a
+# compiled component; this file buys speed, not independence.
+#
+# The parent is public, so no registry login is needed:
+#
+#   docker buildx build --load \
+#     --tag ghcr.io/jpezzulli/sglang-rtxpro6000:v3.0.1 \
+#     --build-arg SOURCE_REVISION=<40-hex commit sha> \
+#     --build-arg SOURCE_REPOSITORY=<git url the builder can reach> \
+#     --platform linux/amd64 \
+#     --file docker/pennyroyal/Dockerfile.pennyroyal-local .
+#
+# SOURCE_REPOSITORY must be reachable from the *build*, which cannot use the
+# operator's credentials. The default is the upstream URL, but a revision that
+# has not been pushed is by definition NOT there, and the fetch will fail with
+# "couldn't find remote ref" -- pass a reachable URL explicitly in that case.
+# A local smart-HTTP remote is the usual answer, e.g. a stdlib relay over the
+# host gateway serving a bare clone:
+#
+#   git clone --bare --local ~/sglang-rtxpro6000 ~/.penny-build/origin.git
+#   git -C ~/.penny-build/origin.git config uploadpack.allowAnySHA1InWant true
+#   python3 ~/.penny-build/smart-http.py            # binds 172.17.0.1:9418
+#   --build-arg SOURCE_REPOSITORY=http://172.17.0.1:9418/origin.git
+#
+# The fetch leaves "origin" pointing upstream afterwards, so the built image
+# never records a build-host URL.
+#
+# Known deviation from a full build: the venv's editable sglang metadata keeps
+# the parent's setuptools-scm version suffix (see the note at the check below).
+FROM ghcr.io/jpezzulli/sglang-rtxpro6000:v3.0.1 AS derived
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+ARG SOURCE_REVISION
+ARG SOURCE_REPOSITORY=https://github.com/jpezzulli/sglang-rtxpro6000.git
+
+# /opt/pennyroyal and its venv are root-owned in the parent image.
+USER root
+
+# Same clone semantics as the canonical build -- shallow, by sha, detached --
+# so the checkout has the shape the version banner and the namespace helper
+# expect, and the gate's revision comparison finds the requested commit. The
+# remote is put back afterwards so the image does not record a build-host URL.
+RUN [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] \
+    && git -C /opt/pennyroyal remote set-url origin "$SOURCE_REPOSITORY" \
+    && git -C /opt/pennyroyal fetch --depth=1 origin "$SOURCE_REVISION" \
+    && git -C /opt/pennyroyal checkout --detach FETCH_HEAD \
+    && git -C /opt/pennyroyal remote set-url origin \
+      https://github.com/jpezzulli/sglang-rtxpro6000.git
+
+COPY docker/pennyroyal/restage_reader.py /tmp/restage_reader.py
+RUN /opt/pennyroyal/.venv/bin/python /tmp/restage_reader.py \
+    && rm -f /tmp/restage_reader.py
+
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+USER penny
+WORKDIR /opt/pennyroyal
+
+# The canonical build's acceptance gate, unchanged. It is what proves the
+# checkout ran, that "sglang" still resolves to this tree's package, and that no
+# tracked file was left dirty by the steps above.
+RUN PENNY_EXPECTED_SOURCE_REVISION="$SOURCE_REVISION" pennyroyal --check

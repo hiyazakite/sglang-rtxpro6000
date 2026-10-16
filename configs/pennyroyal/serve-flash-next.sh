@@ -87,7 +87,17 @@ KV_DTYPE=fp8_e4m3
 MAMBA_SSM_DTYPE=bfloat16
 MAMBA_CONV_DTYPE=bfloat16
 MAMBA_TRACK_INTERVAL=64
-PREFILL_CHUNK_SIZE=4096
+# Prefill chunk size sets the activation reserve that is subtracted from the KV
+# pool (512 MB plus 1.5 MB per chunk token), so it trades a little KV capacity
+# for a lower prefill peak. It is not an admission bound: four concurrent
+# 2,993-token prompts were measured to reach four running requests at chunk
+# 4,096, and a larger chunk did not raise that. Admission is governed by
+# max_running_requests and the prefill token budget instead.
+PREFILL_CHUNK_SIZE="${PREFILL_CHUNK_SIZE:-4096}"
+if [[ ! "$PREFILL_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PREFILL_CHUNK_SIZE must be a positive integer" >&2
+  exit 1
+fi
 for path in "${required_executables[@]}"; do
   [[ -x "$path" ]] || { echo "Required executable missing: $path" >&2; exit 1; }
 done

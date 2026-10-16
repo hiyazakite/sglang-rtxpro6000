@@ -12,7 +12,13 @@ single-request post-first-token throughput by **15.8–28.3%** across short,
 128K and 490K contexts. It also left **7.52 GiB available after CUDA-graph
 capture**, compared with 3.66 GiB in the earlier matching BF16-projection boot.
 The observed difference was about 3.86 GiB; 7.52 GiB is the total available
-after graphs. See [RESULTS.md](RESULTS.md#pennyroyal-v250--optional-online-fp8)
+after graphs. Both arms of that comparison held the pool at 824,384 tokens, so
+the saving there appears as headroom. Where capacity is left automatic it is
+spent on the pool instead: on the same card the profiled pool grows from
+514,304 to about 602,000 tokens while post-graph `available_gpu_mem` stays
+near 3.8 GiB either way. Read the 3.86 GiB figure as headroom at a fixed
+capacity, not as memory that stays free. See
+[RESULTS.md](RESULTS.md#pennyroyal-v250--optional-online-fp8)
 for measurements and timing definitions.
 
 ## Launching it

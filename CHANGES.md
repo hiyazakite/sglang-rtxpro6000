@@ -1,5 +1,26 @@
 # Penny Royal release history
 
+## Unreleased — SM120 serving defaults
+
+The SM120 Flash-Next recipe now exposes the two capacity knobs that had to be
+edited into the file before, and both are validated rather than inherited.
+
+| Affected profile | What changed | Credit / source |
+|---|---|---|
+| `serve-flash-next.sh` | `MAX_PREFILL_TOKENS` defaults to 32,768 instead of 16,384 and is overridable, so one iteration can admit four concurrent 4,096-token prefill chunks. The body size may not be smaller than the chunk, and both values must be positive integers. | Local measurement of the C4 admission path. |
+| `serve-flash-next.sh` | `PREFILL_CHUNK_SIZE` is overridable, defaulting to 4,096. | Local measurement. |
+| Local NVFP4 launcher | Stops defaulting `MAX_TOTAL_TOKENS` to 262,144 and forwards `--max-total-tokens` only when the caller sets it. Because the flag is a ceiling rather than a floor, the old value silently clamped the pool below the profiled size and put a full-context request out of reach. `MAX_MAMBA_CACHE_SIZE` aligns with the recipe at 24. | Local measurement; the ceiling behaviour is at `mem_cache/kv_cache_configurator.py` `_apply_token_constraints`. |
+
+Online FP8 needs no default here. The two SM120 Flash-Next recipes set
+`SGLANG_SM120_ONLINE_MXFP8` to nothing and reach the conversion through the
+automatic eligibility gate recorded under 3.0; the saved value remains only as
+an explicit off/on override, so this fork no longer forces the conversion.
+
+Documentation now separates the two ways the online-FP8 weight saving can be
+spent. The recorded 3.86 GiB is headroom at a pool pinned to 824,384 tokens;
+an automatic pool spends the same saving on about 88,000 more tokens and
+leaves post-graph `available_gpu_mem` near 3.8 GiB either way.
+
 ## 3.0.1 — PLE startup and container cache fixes
 
 Fix WSL2 RAM PLE device pointers, keep TileLang kernels in the persistent cache

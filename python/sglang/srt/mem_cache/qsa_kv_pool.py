@@ -253,6 +253,12 @@ class QSATokenToKVPool(HybridLinearKVPool):
         return self.qsa_rope_position_buffer[loc.long()]
 
     def get_qsa_compressed_k_buffer(self, layer_id: int) -> torch.Tensor:
+        # HiCache restores these compressed index keys layerwise on the H->D
+        # stream, like K/V. The QSA indexer reads them to choose which blocks to
+        # attend, so it must wait for this layer's load exactly as
+        # get_key_buffer() does; otherwise a host-tier hit can select blocks
+        # from not-yet-restored keys (jpezzulli/sglang-rtxpro6000#74).
+        self._wait_for_layer(layer_id)
         return self.qsa_compressed_k_buffer_pool[
             self._transfer_full_attention_id(layer_id)
         ]

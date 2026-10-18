@@ -207,9 +207,15 @@ def prepare_nvfp4_layer_for_marlin(layer: torch.nn.Module) -> None:
 
     if hasattr(layer, "bias") and layer.bias is not None:
         assert layer.bias.shape == (part_size_n,)
-        bias = torch.nn.functional.pad(layer.bias, (0, padded_size_n - part_size_n))
-        bias = marlin_permute_bias(bias)
-        layer.bias = torch.nn.Parameter(bias, requires_grad=False)
+        # apply_fp4_marlin_linear adds the bias to the gemm output, which the
+        # kernel returns in the original N order (unlike vLLM we do not pass
+        # b_bias into gptq_marlin_gemm), so the bias must stay unpermuted.
+        # Pad only, to match the padded gemm output width before the :size_n
+        # slice in apply_fp4_marlin_linear.
+        layer.bias = torch.nn.Parameter(
+            torch.nn.functional.pad(layer.bias, (0, padded_size_n - part_size_n)),
+            requires_grad=False,
+        )
 
 
 def mxfp4_marlin_process_scales(

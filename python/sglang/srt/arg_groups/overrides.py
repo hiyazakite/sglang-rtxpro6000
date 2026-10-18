@@ -2819,15 +2819,20 @@ def _moe_runner_backend_quant_constraints(view: Any) -> dict:
                 moe_runner_backend,
             )
             moe_runner_backend = mxfp8_default
+    # modelopt_mixed resolves its routed experts to ModelOptNvFp4FusedMoEMethod
+    # just like modelopt_fp4, so it needs the same SM120 fallback: leaving the
+    # backend at "auto" makes create_moe_runner pick FLASHINFER_TRTLLM, whose
+    # trtllm-gen FP4 MoE kernels are SM100-only and whose apply() then rejects
+    # the layer because the TRTLLM weight processing never ran.
     if (
         moe_runner_backend == "auto"
-        and view.quantization == "modelopt_fp4"
+        and view.quantization in ("modelopt_fp4", "modelopt_mixed")
         and is_sm120_supported()
     ):
         moe_runner_backend = "flashinfer_cutlass"
         logger.info(
             "Use flashinfer_cutlass as MoE runner backend on SM120 for "
-            "modelopt_fp4 (trtllm-gen MoE kernels are SM100-only)"
+            f"{view.quantization} (trtllm-gen MoE kernels are SM100-only)"
         )
     if moe_runner_backend != view.moe_runner_backend:
         return {"moe_runner_backend": moe_runner_backend}

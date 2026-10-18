@@ -3397,8 +3397,15 @@ class Scheduler(
         if self.enable_hierarchical_cache or get_memory().enable_flexkv:
             self.tree_cache.check_hicache_events()
 
-        if self.enable_priority_preemption or self.is_hybrid_swa:
+        if self.enable_priority_preemption or self.is_hybrid_swa or self.is_hybrid_ssm:
             # Reset batch_is_full to try preemption with a prefill adder.
+            # Multi-pool hybrids (SWA, SSM) reach "full" on whichever dimension
+            # binds first, and that verdict goes stale on its own: a slot frees,
+            # or an evictable state becomes reclaimable, with no new request to
+            # re-trigger the adder. Latching the flag then starves a queued
+            # prefill until an unrelated event rebuilds the running batch -- for
+            # Mamba that means the decode of the whole running batch, i.e.
+            # seconds of TTFT for one request.
             running_batch.batch_is_full = False
 
         if (

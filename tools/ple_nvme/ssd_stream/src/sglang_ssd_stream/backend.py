@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
@@ -31,8 +32,14 @@ from .config import row_nbytes as table_row_nbytes
 # bytes those rows need. _STAGING_MIB is the FP8 (one-byte element) budget and
 # scales with the storage element size, which keeps the row capacity identical
 # for BF16 tables instead of halving it and rejecting default prefill lookups.
-_STAGING_MIB = 16
-_STAGING_SLOTS = 2
+#
+# One lookup covers a whole prefill chunk, so the row capacity has to keep up
+# with --chunked-prefill-size: capacity is fixed in bytes while the lookup grows
+# with the chunk, and an undersized budget surfaces as a fail-loud RuntimeError
+# on a live request rather than at startup. Both knobs are therefore overridable
+# so a layout can be sized for the chunk size it will actually run.
+_STAGING_MIB = int(os.environ.get("PENNY_PLE_STAGING_MIB") or 16)
+_STAGING_SLOTS = int(os.environ.get("PENNY_PLE_STAGING_SLOTS") or 2)
 
 
 @triton.jit

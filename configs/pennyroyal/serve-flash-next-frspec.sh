@@ -48,11 +48,17 @@ fi
 NAMESPACE_HELPER="$REPO_ROOT/scripts/pennyroyal/derive_namespace.py"
 # Host-RAM HiCache tier: --hicache-size counts decimal GB (SGLang sizes the
 # host pool at size * 1e9 bytes), not GiB. An unset PENNY_HICACHE_SIZE_GB keeps
-# this recipe's qualified default; a chosen value must be a positive integer.
+# this recipe's qualified default; a chosen value must be a non-negative
+# integer. 0 turns the tier off entirely, which also forces the NIXL disk tier
+# off: storage backends sit below the host tier and cannot outlive it.
 HICACHE_SIZE_GB="${PENNY_HICACHE_SIZE_GB:-32}"
-if [[ ! "$HICACHE_SIZE_GB" =~ ^[1-9][0-9]*$ ]]; then
-  echo "PENNY_HICACHE_SIZE_GB must be a positive integer number of GB, got '$HICACHE_SIZE_GB'" >&2
+if [[ ! "$HICACHE_SIZE_GB" =~ ^[0-9]+$ ]]; then
+  echo "PENNY_HICACHE_SIZE_GB must be a non-negative integer number of GB, got '$HICACHE_SIZE_GB'" >&2
   exit 1
+fi
+if [[ "$HICACHE_SIZE_GB" == 0 && "${NIXL:-on}" == on ]]; then
+  echo "PENNY_HICACHE_SIZE_GB=0 disables HiCache, so NIXL is forced off" >&2
+  NIXL=off
 fi
 source "$SCRIPT_DIR/chat-template.sh"
 source "$SCRIPT_DIR/request-capacity.sh"
@@ -93,7 +99,11 @@ KV_DTYPE=fp8_e4m3
 MAMBA_SSM_DTYPE=bfloat16
 MAMBA_CONV_DTYPE=bfloat16
 MAMBA_TRACK_INTERVAL=64
-PREFILL_CHUNK_SIZE=4096
+PREFILL_CHUNK_SIZE="${PREFILL_CHUNK_SIZE:-4096}"
+if [[ ! "$PREFILL_CHUNK_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PREFILL_CHUNK_SIZE must be a positive integer, got '$PREFILL_CHUNK_SIZE'" >&2
+  exit 1
+fi
 for path in "$SGLANG_EXE" "$PYTHON"; do
   [[ -x "$path" ]] || { echo "Required executable missing: $path" >&2; exit 1; }
 done
@@ -249,6 +259,16 @@ else
     --hicache-storage-backend-extra-config "@$NIXL_CONFIG")
 fi
 
+# An off tier contributes no argv at all rather than an inert --hicache-size 0.
+HICACHE_ARGS=()
+if [[ "$HICACHE_SIZE_GB" == 0 ]]; then
+  echo "HiCache: off"
+else
+  HICACHE_ARGS=(--enable-hierarchical-cache --hicache-size "$HICACHE_SIZE_GB"
+    --hicache-host-memory-mode cache --hicache-write-policy write_through
+    --hicache-io-backend kernel --hicache-mem-layout page_first)
+fi
+
 launch_args=(serve \
   --model-path "$TARGET_MODEL" \
   --load-format safetensors \
@@ -264,9 +284,7 @@ launch_args=(serve \
   --max-mamba-cache-size "$MAX_MAMBA_CACHE_SIZE" --gdn-mtp-cache-mode none \
   --linear-attn-decode-backend flashinfer --linear-attn-prefill-backend flashinfer \
   --mamba-track-interval "$MAMBA_TRACK_INTERVAL" \
-  --enable-hierarchical-cache --hicache-size "$HICACHE_SIZE_GB" --hicache-host-memory-mode cache \
-  --hicache-write-policy write_through --hicache-io-backend kernel \
-  --hicache-mem-layout page_first "${HICACHE_STORAGE_ARGS[@]}" \
+  "${HICACHE_ARGS[@]}" "${HICACHE_STORAGE_ARGS[@]}" \
   "${PLE_ARGS[@]}" --trust-remote-code \
   --chat-template "$CHAT_TEMPLATE" --image-processor-backend "$IMAGE_PROCESSOR_BACKEND" \
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
